@@ -13,7 +13,7 @@ zfs snapshot zfs-pool@initial
 Next send the initial Snapshot to the backup drive (on new filesystem, a "filesystem" is kind of a subvolume in zfs)
 
 ```zsh
-zfs send -c zfs-pool@initial | zfs receive backup-zfs-drive/zfs-pool
+zfs send -c zfs-pool@initial | zfs receive backup-zfs-disk/zfs-pool
 ```
 
 >NOTE: The -c says that the compressed blocks from zfs-pool will _not_ be decompressed, thus if both use the same compression makes the transfer faster
@@ -29,7 +29,7 @@ zfs snapshot zfs-pool@nextsync
 And then copy them over with
 
 ```zsh
-zfs send -c -i zfs-pool@initial zfs-pool@nextsync | zfs receive backup-zfs-drive/zfs-pool
+zfs send -c -i zfs-pool@initial zfs-pool@nextsync | zfs receive backup-zfs-disk/zfs-pool
 ```
 
 ## Script

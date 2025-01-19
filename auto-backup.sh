@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SOURCE_POOL="zfs-pool"
-BACKUP_POOL="backup-zfs-drive"
+BACKUP_POOL="backup-zfs-disk/zfs-pool"
 
 if [[ "$1" == "-h" ]]; then
     echo "Usage: $0 [-h] [-n] [-f]"
