@@ -1,0 +1,5 @@
+#!/bin/bash
+# Deterministic, always-increasing timestamps so test runs never collide within a second.
+n=$(( $(cat /state/clock 2>/dev/null || echo 0) + 1 ))
+echo "$n" > /state/clock
+printf '2026-10-%02d---03-%02d-%02d\n' $(( n / 3600 + 1 )) $(( n / 60 % 60 )) $(( n % 60 ))

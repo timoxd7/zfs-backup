@@ -1,0 +1,93 @@
+#!/bin/bash
+# Minimal stateful stand-in for zfs(8), implementing only what auto-backup.sh uses.
+# State: $ZFS_STATE/ds/<dataset with / as %> holds lines "<seq> <guid> <snapname>",
+#        $ZFS_STATE/pool/<pool> marks an imported pool.
+# Fault injection: $ZFS_STATE/fail_receive, $ZFS_STATE/hold/<snapname>.
+set -u
+S=${ZFS_STATE:-/state}
+f()      { echo "$S/ds/${1//\//%}"; }
+exists() { [[ -e "$S/pool/$1" || -e $(f "$1") ]]; }
+err()    { echo "fake-zfs: $*" >&2; exit 1; }
+newguid(){ echo $(( (RANDOM << 30) | (RANDOM << 15) | RANDOM )); }
+nextseq(){ local n; n=$(cat "$S/seq" 2>/dev/null || echo 0); echo $((n + 1)) > "$S/seq"; echo $((n + 1)); }
+has()    { awk -v n="$2" '$3 == n { found = 1 } END { exit !found }' "$1" 2>/dev/null; }
+
+cmd=$1; shift
+case $cmd in
+list)
+    snap=false ds=""
+    while (($#)); do
+        case $1 in
+            -t) snap=true; shift 2 ;;
+            -H) shift ;;
+            -d|-o|-S) shift 2 ;;
+            *) ds=$1; shift ;;
+        esac
+    done
+    exists "$ds" || err "cannot open '$ds': dataset does not exist"
+    if $snap; then
+        [[ -e $(f "$ds") ]] || exit 0
+        sort -k1,1nr "$(f "$ds")" | awk -v d="$ds" '{ printf "%s\t%s@%s\n", $2, d, $3 }'
+    else
+        echo "$ds"
+    fi ;;
+snapshot)
+    ds=${1%@*} n=${1#*@}
+    exists "$ds" || err "cannot open '$ds': dataset does not exist"
+    has "$(f "$ds")" "$n" && err "snapshot '$1' already exists"
+    echo "$(nextseq) $(newguid) $n" >> "$(f "$ds")" ;;
+send)
+    base=""
+    echo "$*" >> "$S/send_args"
+    while [[ $1 == -* ]]; do
+        case $1 in
+            -c) shift ;;
+            -I) base=${2#*@}; shift 2 ;;
+            *) err "unsupported send option: $1" ;;
+        esac
+    done
+    ds=${1%@*} n=${1#*@} file=$(f "$ds")
+    has "$file" "$n" || err "snapshot $1 does not exist"
+    if [[ -z $base ]]; then
+        echo "FULL $(awk -v n="$n" '$3 == n' "$file")"
+    else
+        has "$file" "$base" || err "snapshot $ds@$base does not exist"
+        read -r bseq bguid _ < <(awk -v n="$base" '$3 == n' "$file")
+        read -r tseq _ _ < <(awk -v n="$n" '$3 == n' "$file")
+        echo "INCR $bguid"
+        awk -v a="$bseq" -v b="$tseq" '$1 > a && $1 <= b' "$file" | sort -k1,1n | sed 's/^/SNAP /'
+    fi ;;
+receive)
+    [[ $1 == -F ]] && shift
+    t=$1 tf=$(f "$1")
+    [[ -e $S/pool/${t%%/*} ]] || { cat >/dev/null; err "pool '${t%%/*}' does not exist"; }
+    [[ -e $S/fail_receive ]] && { cat >/dev/null; err "injected receive failure"; }
+    read -r kind a b c
+    case $kind in
+    FULL)
+        [[ -s $tf ]] && { cat >/dev/null; err "destination '$t' has snapshots, must destroy them to overwrite it"; }
+        echo "$(nextseq) $b $c" >> "$tf" ;;
+    INCR)
+        [[ -s $tf ]] || { cat >/dev/null; err "destination '$t' does not exist"; }
+        newest=$(sort -k1,1nr "$tf" | head -1 | cut -d' ' -f2)
+        [[ $newest == "$a" ]] || { cat >/dev/null; err "most recent snapshot of $t does not match incremental source"; }
+        while read -r _ _ guid name; do echo "$(nextseq) $guid $name" >> "$tf"; done ;;
+    *) err "bad stream" ;;
+    esac ;;
+destroy)
+    dry=false
+    while [[ $1 == -* ]]; do [[ $1 == *n* ]] && dry=true; shift; done
+    ds=${1%@*} tf=$(f "${1%@*}")
+    IFS=, read -ra arr <<< "${1#*@}"
+    for n in "${arr[@]}"; do
+        has "$tf" "$n" || err "could not find snapshot $ds@$n"
+        [[ -e $S/hold/$n ]] && err "cannot destroy snapshot $ds@$n: dataset is busy"
+    done
+    for n in "${arr[@]}"; do
+        if $dry; then echo "would destroy $ds@$n"; else
+            echo "will destroy $ds@$n"
+            awk -v n="$n" '$3 != n' "$tf" > "$tf.tmp" && mv "$tf.tmp" "$tf"
+        fi
+    done ;;
+*) err "unsupported command: $cmd" ;;
+esac
